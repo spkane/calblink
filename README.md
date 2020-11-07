@@ -21,11 +21,11 @@ LED to change colors based on your next meeting. The colors it will use are:
 To use calblink, you need the following:
 
 1.  A blink(1) from [ThingM](http://blink1.thingm.com/) - calblink supports both
-    mk1 and mk2 blink(1), but the mk2 is much nicer.
+    mk1, mk2, and mk3 blink(1), but the mk3 is much nicer.
 1.  A place to put the blink(1) where you can see it.
 2.  The latest version of [Go](https://golang.org/).
 3.  The calblink code, found in this directory.
-4.  libusb. The [go-blink1](https://github.com/hink/go-blink1) page has details.
+4.  libusb. The [go-blink1](https://github.com/spkane/go-blink1) page has details.
 5.  A directory to run this in.
 6.  A few go packages, which we'll install later in the Setup section.
 7.  A Google Calendar account.
@@ -51,7 +51,7 @@ To use calblink, you need the following:
 6.  Install the blink(1) library for Go:
 
     ```
-    go get github.com/hink/go-blink1
+    go get github.com/spkane/go-blink1
     ```
 
 7.  Get an OAuth 2 ID as described in step 1 of the [Google Calendar

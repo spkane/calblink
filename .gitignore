@@ -1,0 +1,6 @@
+# Credential files
+*.json
+
+# binaries
+calblink
+
