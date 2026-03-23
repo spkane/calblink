@@ -1,0 +1,188 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Validate Tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      prerelease: ${{ steps.validate.outputs.prerelease }}
+    steps:
+      - id: validate
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          regex='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$'
+          if [[ ! "$tag" =~ $regex ]]; then
+            echo "::error::Tag '$tag' is not valid Semantic Versioning 2.0.0 (expected examples like v1.2.3 or v1.2.3-rc.1)."
+            exit 1
+          fi
+
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+          if [[ "$tag" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build ${{ matrix.goos }}-${{ matrix.goarch }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            archive_ext: tar.gz
+            artifact_name: calblink_linux_amd64
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            archive_ext: tar.gz
+            artifact_name: calblink_linux_arm64
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+            archive_ext: tar.gz
+            artifact_name: calblink_darwin_amd64
+          - runner: macos-15
+            goos: darwin
+            goarch: arm64
+            archive_ext: tar.gz
+            artifact_name: calblink_darwin_arm64
+          - runner: windows-latest
+            goos: windows
+            goarch: amd64
+            archive_ext: zip
+            artifact_name: calblink_windows_amd64
+    env:
+      GO_VERSION: 1.26.1
+      VERSION: ${{ needs.prepare.outputs.version }}
+      ARCHIVE_NAME: calblink_${{ needs.prepare.outputs.version }}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.archive_ext }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache: true
+
+      - name: Install Linux build dependencies
+        if: matrix.goos == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libusb-1.0-0-dev pkg-config
+
+      - name: Install macOS build dependencies
+        if: matrix.goos == 'darwin'
+        run: brew install libusb pkgconf
+
+      - name: Set up MSYS2
+        if: matrix.goos == 'windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          path-type: inherit
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-libusb
+            mingw-w64-ucrt-x86_64-pkgconf
+            zip
+
+      - name: Build Unix archive
+        if: matrix.goos != 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/package
+
+          export GOOS="${{ matrix.goos }}"
+          export GOARCH="${{ matrix.goarch }}"
+          export CGO_ENABLED=1
+
+          go build -trimpath -tags blink1 -ldflags="-s -w" -o dist/package/calblink .
+
+          cp README.md LICENSE SERVICE.md dist/package/
+          tar -C dist/package -czf "dist/${ARCHIVE_NAME}" .
+
+      - name: Build Windows archive
+        if: matrix.goos == 'windows'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/package
+
+          export GOOS=windows
+          export GOARCH=amd64
+          export CGO_ENABLED=1
+          export CC=gcc
+
+          go build -trimpath -tags blink1 -ldflags="-s -w" -o dist/package/calblink.exe .
+
+          cp README.md LICENSE SERVICE.md dist/package/
+          cp "${MSYSTEM_PREFIX}/bin/libusb-1.0.dll" dist/package/
+          (
+            cd dist/package
+            zip -r "../${ARCHIVE_NAME}" .
+          )
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ env.ARCHIVE_NAME }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish Release
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.version }}
+          name: ${{ needs.prepare.outputs.version }}
+          generate_release_notes: true
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS.txt

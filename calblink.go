@@ -1,4 +1,5 @@
 // Copyright 2017 Google Inc.
+// Modifications Copyright 2026 calblink contributors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,6 +20,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/kardianos/service"
@@ -37,6 +39,9 @@ var deviceFailureRetriesFlag = flag.Int("device_failure_retries", 10, "Number of
 var showDotsFlag = flag.Bool("show_dots", true, "Whether to show progress dots after every cycle of checking the calendar")
 var runAsServiceFlag = flag.Bool("runAsService", false, "Whether to run as a service or remain live in the current shell")
 var serviceFlag = flag.String("service", "", "Control the system service.")
+var authFlag = flag.String("auth", "", "Auth action to perform and exit: login, logout, or status")
+var listCalendarsFlag = flag.Bool("list_calendars", false, "List accessible Google Calendars and exit")
+var listBlinkDevicesFlag = flag.Bool("list_blink1_devices", false, "List detected blink(1) HID devices and exit")
 
 type debugLevel int
 
@@ -53,7 +58,9 @@ var dots bool = false
 type program struct {
 	service   service.Service
 	userPrefs *UserPrefs
+	paths     AppPaths
 	exit      chan struct{}
+	exitOnce  sync.Once
 }
 
 // Time calculation methods
@@ -103,6 +110,11 @@ func main() {
 	flag.Usage = usage
 	flag.Parse()
 
+	visitedFlags = make(map[string]bool)
+	flag.Visit(func(myFlag *flag.Flag) {
+		visitedFlags[myFlag.Name] = true
+	})
+
 	if *debugFlag {
 		debug = debugOn
 	}
@@ -111,9 +123,10 @@ func main() {
 		debug = debugVerbose
 	}
 
+	appPaths = resolveAppPaths()
 	userPrefs := readUserPrefs()
-	isService := false
-	serviceCmd := ""
+	isService := *runAsServiceFlag
+	serviceCmd := *serviceFlag
 
 	// Overrides from command-line
 	flag.Visit(func(myFlag *flag.Flag) {
@@ -142,8 +155,43 @@ func main() {
 		dots = true
 	}
 
+	if *listBlinkDevicesFlag {
+		if err := printBlinkDeviceDebugInfo(); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	if *authFlag != "" {
+		if err := runAuthAction(*authFlag, appPaths, userPrefs); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	if *listCalendarsFlag {
+		srv, err := Connect(appPaths, userPrefs, true)
+		if err != nil {
+			log.Fatal(err)
+		}
+		entries, err := listAvailableCalendars(srv)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("Available Google Calendars:")
+		for _, entry := range entries {
+			label := entry.Summary
+			if entry.Primary {
+				label += " [primary]"
+			}
+			fmt.Printf(" - %s: %s\n", label, entry.Id)
+		}
+		return
+	}
+
 	prg := &program{
 		userPrefs: userPrefs,
+		paths:     appPaths,
 		exit:      make(chan struct{}),
 	}
 
@@ -155,16 +203,25 @@ func main() {
 
 }
 
+func (p *program) requestExit() {
+	p.exitOnce.Do(func() {
+		close(p.exit)
+	})
+}
+
 func runLoop(p *program) {
 	userPrefs := p.userPrefs
-	srv, err := Connect()
+	srv, err := Connect(p.paths, userPrefs, true)
 	if err != nil {
 		log.Fatalf("Unable to retrieve Calendar client: %v", err)
+	}
+	if err := resolveConfiguredCalendars(srv, userPrefs); err != nil {
+		log.Fatalf("Unable to resolve calendars: %v", err)
 	}
 
 	blinkerState := NewBlinkerState(userPrefs.DeviceFailureRetries)
 
-	go signalHandler(blinkerState)
+	go signalHandler(blinkerState, p.requestExit)
 	go blinkerState.patternRunner()
 
 	if p.service == nil {
@@ -180,7 +237,7 @@ func runLoop(p *program) {
 	for {
 		select {
 		case <-p.exit:
-			blinkerState.turnOff()
+			blinkerState.shutdown()
 			fmt.Printf("Calblink exiting at %v\n", time.Now())
 			ticker.Stop()
 			return

@@ -1,4 +1,5 @@
 // Copyright 2024 Google Inc.
+// Modifications Copyright 2026 calblink contributors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,6 +24,7 @@ import (
 	"io/fs"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -74,6 +76,8 @@ type UserPrefs struct {
 	MultiEvent           bool
 	PriorityFlashSide    int
 	WorkingLocations     []WorkSite
+	GoogleClientID       string
+	GoogleClientSecret   string
 }
 
 // Struct used for decoding the JSON
@@ -88,10 +92,12 @@ type prefLayout struct {
 	Calendars            []string
 	ResponseState        string
 	DeviceFailureRetries int64
-	ShowDots             string
-	MultiEvent           string
+	ShowDots             any
+	MultiEvent           any
 	PriorityFlashSide    int64
 	WorkingLocations     []string
+	GoogleClientID       string
+	GoogleClientSecret   string
 }
 
 type tomlLayout struct {
@@ -105,10 +111,12 @@ type tomlLayout struct {
 	Calendars            []string
 	ResponseState        string
 	DeviceFailureRetries int64
-	ShowDots             bool
-	MultiEvent           bool
+	ShowDots             *bool
+	MultiEvent           *bool
 	PriorityFlashSide    int64
 	WorkingLocations     []string
+	GoogleClientID       string
+	GoogleClientSecret   string
 }
 
 // responseState is an enumerated list of event response states, used to control which events will activate the blink(1).
@@ -198,14 +206,20 @@ func makeWorkSite(location string) WorkSite {
 	return WorkSite{SiteType: siteType, Name: name}
 }
 
+func (site WorkSite) Matches(other WorkSite) bool {
+	if site.SiteType != other.SiteType {
+		return false
+	}
+	return site.Name == "" || other.Name == "" || strings.EqualFold(site.Name, other.Name)
+}
+
 // User preferences methods
 
 func readUserPrefs() *UserPrefs {
-	configFile := *configFileFlag
+	configFile := appPaths.ConfigFile
 	_, err := os.Stat(configFile)
 	if errors.Is(err, fs.ErrNotExist) {
-		// primary file doesn't exist, try the secondary.
-		configFile = *backupConfigFileFlag
+		configFile = appPaths.LegacyConfigFile
 	}
 	_, err = os.Stat(configFile)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -230,6 +244,7 @@ func getDefaultPrefs() *UserPrefs {
 	userPrefs.ResponseState = ResponseState(*responseStateFlag)
 	userPrefs.DeviceFailureRetries = *deviceFailureRetriesFlag
 	userPrefs.ShowDots = *showDotsFlag
+	userPrefs.Excludes = make(map[string]bool)
 	return userPrefs
 }
 
@@ -291,14 +306,20 @@ func readTomlPrefs(configFile string) *UserPrefs {
 	if prefs.DeviceFailureRetries != 0 {
 		userPrefs.DeviceFailureRetries = int(prefs.DeviceFailureRetries)
 	}
-	userPrefs.ShowDots = prefs.ShowDots
-	userPrefs.MultiEvent = prefs.MultiEvent
+	if prefs.ShowDots != nil {
+		userPrefs.ShowDots = *prefs.ShowDots
+	}
+	if prefs.MultiEvent != nil {
+		userPrefs.MultiEvent = *prefs.MultiEvent
+	}
 	if prefs.PriorityFlashSide != 0 {
 		userPrefs.PriorityFlashSide = int(prefs.PriorityFlashSide)
 	}
 	for _, location := range prefs.WorkingLocations {
 		userPrefs.WorkingLocations = append(userPrefs.WorkingLocations, makeWorkSite(location))
 	}
+	userPrefs.GoogleClientID = strings.TrimSpace(prefs.GoogleClientID)
+	userPrefs.GoogleClientSecret = strings.TrimSpace(prefs.GoogleClientSecret)
 	debugLog("User prefs: %v\n", userPrefs)
 	return userPrefs
 }
@@ -307,12 +328,14 @@ func readJsonPrefs(configFile string) *UserPrefs {
 	// Set defaults from command line
 	userPrefs := getDefaultPrefs()
 	file, err := os.Open(configFile)
-	defer file.Close()
 	if err != nil {
 		// Lack of a config file is not a fatal error.
-		debugLog("Unable to read config file %v : %v\n", *configFileFlag, err)
+		debugLog("Unable to read config file %v : %v\n", configFile, err)
 		return userPrefs
 	}
+	defer func() {
+		_ = file.Close()
+	}()
 	prefs := prefLayout{}
 	decoder := json.NewDecoder(file)
 	decoder.DisallowUnknownFields()
@@ -371,18 +394,36 @@ func readJsonPrefs(configFile string) *UserPrefs {
 	if prefs.DeviceFailureRetries != 0 {
 		userPrefs.DeviceFailureRetries = int(prefs.DeviceFailureRetries)
 	}
-	if prefs.ShowDots != "" {
-		userPrefs.ShowDots = (prefs.ShowDots == "true")
+	if showDots, ok := parseBoolPref(prefs.ShowDots); ok {
+		userPrefs.ShowDots = showDots
 	}
-	userPrefs.MultiEvent = (prefs.MultiEvent == "true")
+	if multiEvent, ok := parseBoolPref(prefs.MultiEvent); ok {
+		userPrefs.MultiEvent = multiEvent
+	}
 	if prefs.PriorityFlashSide != 0 {
 		userPrefs.PriorityFlashSide = int(prefs.PriorityFlashSide)
 	}
 	for _, location := range prefs.WorkingLocations {
 		userPrefs.WorkingLocations = append(userPrefs.WorkingLocations, makeWorkSite(location))
 	}
+	userPrefs.GoogleClientID = strings.TrimSpace(prefs.GoogleClientID)
+	userPrefs.GoogleClientSecret = strings.TrimSpace(prefs.GoogleClientSecret)
 	debugLog("User prefs: %v\n", userPrefs)
 	return userPrefs
+}
+
+func parseBoolPref(value any) (bool, bool) {
+	switch v := value.(type) {
+	case nil:
+		return false, false
+	case bool:
+		return v, true
+	case string:
+		parsed, err := strconv.ParseBool(v)
+		return parsed, err == nil
+	default:
+		return false, false
+	}
 }
 
 func printStartInfo(userPrefs *UserPrefs) {

@@ -1,0 +1,9 @@
+calblink
+Copyright 2017, 2024 Google Inc.
+Modifications Copyright 2026 calblink contributors.
+
+This distribution is derived from the original calblink project published by
+Google and continues to be distributed under the Apache License, Version 2.0.
+
+This distribution also includes code adapted from the Google Calendar API
+Quickstart examples, which are documented in the project README.
