@@ -1,0 +1,6 @@
+config:
+  MD004:
+    style: dash
+  MD013: false
+  MD046:
+    style: fenced

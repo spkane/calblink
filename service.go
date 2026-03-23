@@ -1,4 +1,5 @@
 // Copyright 2024 Google Inc.
+// Modifications Copyright 2026 calblink contributors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,6 +20,7 @@ package main
 import (
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/kardianos/service"
 )
@@ -28,12 +30,19 @@ func (p *program) StartService(serviceCmd string) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	args := []string{"-runAsService"}
+	if p.paths.ConfigFile != "" {
+		args = append(args, "-config", p.paths.ConfigFile)
+	}
+	if p.paths.ClientSecretFile != "" {
+		args = append(args, "-clientsecret", p.paths.ClientSecretFile)
+	}
 	svcConfig := &service.Config{
 		Name:             "calblink",
 		DisplayName:      "calblink",
 		Description:      "Service to monitor Google Calendar to control a blink(1)",
-		Arguments:        []string{"-runAsService"},
-		WorkingDirectory: dir,
+		Arguments:        args,
+		WorkingDirectory: filepath.Clean(dir),
 		Option: service.KeyValue{
 			"UserService": true,
 		},
@@ -63,6 +72,6 @@ func (p *program) Start(s service.Service) error {
 }
 
 func (p *program) Stop(s service.Service) error {
-	close(p.exit)
+	p.requestExit()
 	return nil
 }
