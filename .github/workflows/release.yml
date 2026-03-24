@@ -89,7 +89,7 @@ jobs:
         if: matrix.goos == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libusb-1.0-0-dev pkg-config
+          sudo apt-get install -y libudev-dev libusb-1.0-0-dev pkg-config
 
       - name: Install macOS build dependencies
         if: matrix.goos == 'darwin'
