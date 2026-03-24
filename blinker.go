@@ -31,6 +31,10 @@ const failureRetries = 3
 
 const startupSignalStep = 120 * time.Millisecond
 
+var steadyStateRefreshInterval = 30 * time.Second
+
+var openBlinkDeviceFn = openBlinkDevice
+
 // calendarState is a display state for the calendar event. It encapsulates both the colors to display and the flash duration.
 type CalendarState struct {
 	Name           string
@@ -113,6 +117,7 @@ func SwapState(in CalendarState) CalendarState {
 
 // blinkerState encapsulates the current device state of the blink(1).
 type BlinkerState struct {
+	mu          sync.Mutex
 	device      blinkDevice
 	newState    chan CalendarState
 	failures    int
@@ -136,11 +141,17 @@ func NewBlinkerState(maxFailures int) *BlinkerState {
 }
 
 func (blinker *BlinkerState) reinitialize() error {
+	blinker.mu.Lock()
+	defer blinker.mu.Unlock()
+	return blinker.reinitializeLocked()
+}
+
+func (blinker *BlinkerState) reinitializeLocked() error {
 	if blinker.device != nil {
-		blinker.device.Close()
+		safeCloseBlinkDevice(blinker.device)
 		blinker.device = nil
 	}
-	device, err := openBlinkDevice()
+	device, err := openBlinkDeviceFn()
 	if err != nil {
 		blinker.failures++
 		if blinker.maxFailures > 0 && blinker.failures == blinker.maxFailures {
@@ -158,8 +169,10 @@ func (blinker *BlinkerState) reinitialize() error {
 }
 
 func (blinker *BlinkerState) turnOff() {
+	blinker.mu.Lock()
+	defer blinker.mu.Unlock()
 	if blinker.device != nil {
-		_ = blinker.device.SetState(offLightState)
+		_ = safeSetBlinkDeviceState(blinker.device, offLightState)
 	}
 }
 
@@ -184,8 +197,10 @@ func (blinker *BlinkerState) shutdown() {
 	blinker.doneOnce.Do(func() {
 		close(blinker.done)
 		blinker.turnOff()
+		blinker.mu.Lock()
+		defer blinker.mu.Unlock()
 		if blinker.device != nil {
-			blinker.device.Close()
+			safeCloseBlinkDevice(blinker.device)
 			blinker.device = nil
 		}
 	})
@@ -198,9 +213,14 @@ func (blinker *BlinkerState) setState(state LightState) error {
 	default:
 	}
 
+	blinker.mu.Lock()
+	defer blinker.mu.Unlock()
+	return blinker.setStateLocked(state)
+}
+
+func (blinker *BlinkerState) setStateLocked(state LightState) error {
 	if blinker.device == nil || blinker.failures > 0 {
-		if err := blinker.reinitialize(); err != nil {
-			errorLog("Reinitialize failed, error %v\n", err)
+		if err := blinker.reinitializeLocked(); err != nil {
 			return err
 		}
 	}
@@ -208,14 +228,13 @@ func (blinker *BlinkerState) setState(state LightState) error {
 		return fmt.Errorf("blink(1) device unavailable")
 	}
 
-	err := blinker.device.SetState(state)
+	err := safeSetBlinkDeviceState(blinker.device, state)
 	if err != nil {
 		errorLog("Re-initializing because of error %v\n", err)
-		if err = blinker.reinitialize(); err != nil {
-			errorLog("Reinitialize failed, error %v\n", err)
+		if err = blinker.reinitializeLocked(); err != nil {
 			return err
 		}
-		err = blinker.device.SetState(state)
+		err = safeSetBlinkDeviceState(blinker.device, state)
 		if err != nil {
 			errorLog("Setting blinker state failed, error %v\n", err)
 			return err
@@ -223,6 +242,30 @@ func (blinker *BlinkerState) setState(state LightState) error {
 	}
 	blinker.failures = 0
 	return nil
+}
+
+func safeCloseBlinkDevice(device blinkDevice) {
+	if device == nil {
+		return
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			errorLog("Recovered from panic while closing blink(1): %v\n", recovered)
+		}
+	}()
+	device.Close()
+}
+
+func safeSetBlinkDeviceState(device blinkDevice, state LightState) (err error) {
+	if device == nil {
+		return fmt.Errorf("blink(1) device unavailable")
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("panic writing blink(1) state: %v", recovered)
+		}
+	}()
+	return device.SetState(state)
 }
 
 func (blinker *BlinkerState) patternRunner() {
@@ -233,6 +276,7 @@ func (blinker *BlinkerState) patternRunner() {
 	}
 
 	var ticker <-chan time.Time
+	var refreshTicker <-chan time.Time
 	stateFlip := false
 	for {
 		select {
@@ -244,15 +288,11 @@ func (blinker *BlinkerState) patternRunner() {
 				currentState = newState
 				if newState.primaryFlash > 0 || newState.secondaryFlash > 0 {
 					ticker = time.After(time.Millisecond)
+					refreshTicker = nil
 				} else {
 					ticker = nil
-					state1 := newState.primary
-					state1.LED = LED1
-					state2 := newState.secondary
-					state2.LED = LED2
-					err1 := blinker.setState(state1)
-					err2 := blinker.setState(state2)
-					failing = err1 != nil || err2 != nil
+					refreshTicker = time.After(steadyStateRefreshInterval)
+					failing = blinker.applyCurrentState(newState)
 				}
 			} else {
 				debugLog("Retaining state %v unchanged\n", newState)
@@ -294,8 +334,22 @@ func (blinker *BlinkerState) patternRunner() {
 			}
 			verboseLog("Next tick: %s\n", nextTick)
 			ticker = time.After(nextTick)
+		case <-refreshTicker:
+			verboseLog("Refreshing steady state %v\n", currentState)
+			failing = blinker.applyCurrentState(currentState)
+			refreshTicker = time.After(steadyStateRefreshInterval)
 		}
 	}
+}
+
+func (blinker *BlinkerState) applyCurrentState(state CalendarState) bool {
+	state1 := state.primary
+	state1.LED = LED1
+	state2 := state.secondary
+	state2.LED = LED2
+	err1 := blinker.setState(state1)
+	err2 := blinker.setState(state2)
+	return err1 != nil || err2 != nil
 }
 
 // Signal handler - SIGINT and SIGTERM should turn off the blinker before exiting.

@@ -229,7 +229,11 @@ file includes several useful options you can set:
 - deviceFailureRetries - how many consecutive blink(1) initialization failures to
     tolerate before calblink starts logging the device as unavailable. Default is 10.
     Calblink will continue retrying so it can recover automatically if the device is
-    reconnected.
+    reconnected. For steady, non-flashing states it also periodically reapplies the
+    current color so reconnects and laptop sleep/wake can recover even when the
+    calendar state itself has not changed. This refresh is timer-driven, so after
+    a reconnect or wake the LED may take up to about 30 seconds to recover if the
+    displayed state is a solid color.
 - showDots - whether to show a dot (or similar mark) after every poll interval
     to show that the program is running. Default is true. Symbols have the
     following meanings:
@@ -290,8 +294,8 @@ in braces and having a comma after every field".
 
 - Occasionally the shutdown is not as clean as it should be.
 - Something seems to cause an occasional crash.
-- If the blink(1) becomes disconnected, sometimes the program crashes instead of failing
-    gracefully.
+- Physical USB disconnects should now be retried automatically, but HID behavior can
+    still vary by platform and driver stack.
 
 ## Troubleshooting
 
