@@ -94,8 +94,7 @@ To use calblink, you need the following:
       - Linux: `$XDG_CONFIG_HOME/calblink/oauth-client.json` or
         `~/.config/calblink/oauth-client.json`
       - Windows: `%AppData%\calblink\oauth-client.json`
-      - Fallback (only if the OS config directory is unavailable):
-        `~/.calblink/oauth-client.json`
+      - Legacy fallback: `~/.calblink/oauth-client.json`
     - During Google sign-in you will likely see a "Google hasn't verified this
         app" warning because a personal calblink OAuth app is typically
         unverified. That is expected. Use the advanced/continue flow in Google

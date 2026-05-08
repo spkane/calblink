@@ -1,0 +1,16 @@
+[Unit]
+Description=calblink Google Calendar blink(1) monitor
+Documentation=https://github.com/spkane/calblink
+After=default.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/calblink -runAsService
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=default.target

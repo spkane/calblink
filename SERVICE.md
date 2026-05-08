@@ -8,9 +8,8 @@ turned on and survive reboots.
 
 ## What operating systems does this mode support?
 
-It has only been tested on macOS. Theoretically it should work on Linux and other
-Unix-style operating systems, and might possibly work on Windows. Try it out and if
-you have issues, let me know.
+It supports per-user launchd on macOS and per-user systemd on Linux. Static service
+files are provided in `files/macos` and `files/linux`.
 
 ## What potential problems are there for this mode?
 
@@ -24,28 +23,55 @@ is a blink(1) plugged in.
 If you don't disable the launch daemon when there isn't a blink(1) plugged in, calblink
 will crash and be automatically restarted every ten seconds or so.
 
-## How do I set this up?
+## How do I set this up on macOS?
 
-These instructions assume macOS.
+These instructions use the checked-in launchd file.
 
 1. Install calblink like you normally would, then make sure your configuration
-   is set up the way you want.
-2. Run calblink as follows:
+   is set up the way you want. The provided launch agent expects `calblink` to
+   be available in `/usr/local/bin` or `/opt/homebrew/bin`.
+2. Install and load the launch agent:
 
    ```bash
-   ./calblink -runAsService -service install
+   install -m 0644 files/macos/com.spkane.calblink.plist ~/Library/LaunchAgents/
+   launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.spkane.calblink.plist
+   launchctl enable "gui/$(id -u)/com.spkane.calblink"
+   launchctl kickstart "gui/$(id -u)/com.spkane.calblink"
    ```
 
-   This will install a launch agent in `~/Library/LaunchAgents`.
-3. You can then control it with `launchctl` like any other launch agent, or run
-   calblink to control the agent:
+3. Control it with `launchctl`:
 
    ```bash
-   ./calblink -runAsService -service start
+   launchctl print "gui/$(id -u)/com.spkane.calblink"
+   launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.spkane.calblink.plist
    ```
 
-   Available commands include `start`, `stop`, `restart`, `install`, and `uninstall`.
-4. Log messages will go into your home directory, in `calblink.out.log` and
-   `calblink.err.log`. Unless debug is turned on, there should be minimal logging.
-   One log line is created at startup and shutdown, and fatal errors will be logged
-   to the error log.
+4. Log messages go to `/tmp/com.spkane.calblink.out.log` and
+   `/tmp/com.spkane.calblink.err.log`.
+
+## How do I set this up on Linux?
+
+These instructions assume a user-level systemd service.
+
+1. Install calblink like you normally would, then make sure your configuration
+   is set up the way you want. The provided unit expects `calblink` to be
+   installed at `~/.local/bin/calblink`.
+2. Install and start the user service:
+
+   ```bash
+   install -D -m 0644 files/linux/calblink.service ~/.config/systemd/user/calblink.service
+   systemctl --user daemon-reload
+   systemctl --user enable --now calblink.service
+   ```
+
+3. Control and inspect it with systemd:
+
+   ```bash
+   systemctl --user status calblink.service
+   journalctl --user-unit calblink.service
+   systemctl --user restart calblink.service
+   ```
+
+The older built-in service installer is still available with
+`./calblink -runAsService -service install`, but the checked-in service files are
+preferred because they are reviewable and easier to manage with normal OS tools.

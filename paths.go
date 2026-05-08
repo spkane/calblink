@@ -40,14 +40,21 @@ func resolveAppPaths() AppPaths {
 	}
 
 	configDir := defaultConfigDir(workingDir)
+	legacyConfigDir := defaultLegacyConfigDir(workingDir)
 	localConfig := filepath.Join(workingDir, "conf.toml")
 	localLegacyConfig := filepath.Join(workingDir, "conf.json")
 	defaultConfig := filepath.Join(configDir, "config.toml")
 	defaultLegacyConfig := filepath.Join(configDir, "conf.json")
+	legacyConfig := filepath.Join(legacyConfigDir, "config.toml")
+	legacyLegacyConfig := filepath.Join(legacyConfigDir, "conf.json")
 	defaultOAuthClient := filepath.Join(configDir, "oauth-client.json")
+	legacyOAuthClient := filepath.Join(legacyConfigDir, "oauth-client.json")
 	defaultClientSecret := filepath.Join(configDir, "client_secret.json")
+	legacyClientSecret := filepath.Join(legacyConfigDir, "client_secret.json")
 	localClientSecret := filepath.Join(workingDir, "client_secret.json")
 	localOAuthClient := filepath.Join(workingDir, "oauth-client.json")
+	defaultToken := filepath.Join(configDir, "token.json")
+	legacyToken := filepath.Join(legacyConfigDir, "token.json")
 
 	configPath := defaultConfig
 	switch {
@@ -57,10 +64,14 @@ func resolveAppPaths() AppPaths {
 		configPath = localConfig
 	case fileExists(defaultConfig):
 		configPath = defaultConfig
+	case fileExists(legacyConfig):
+		configPath = legacyConfig
 	case fileExists(localLegacyConfig):
 		configPath = localLegacyConfig
 	case fileExists(defaultLegacyConfig):
 		configPath = defaultLegacyConfig
+	case fileExists(legacyLegacyConfig):
+		configPath = legacyLegacyConfig
 	}
 
 	legacyConfigPath := defaultLegacyConfig
@@ -68,6 +79,10 @@ func resolveAppPaths() AppPaths {
 		legacyConfigPath = cleanPath(*backupConfigFileFlag)
 	} else if fileExists(localLegacyConfig) {
 		legacyConfigPath = localLegacyConfig
+	} else if fileExists(defaultLegacyConfig) {
+		legacyConfigPath = defaultLegacyConfig
+	} else if fileExists(legacyLegacyConfig) {
+		legacyConfigPath = legacyLegacyConfig
 	}
 
 	clientSecretPath := defaultClientSecret
@@ -78,24 +93,34 @@ func resolveAppPaths() AppPaths {
 		clientSecretPath = localClientSecret
 	case fileExists(defaultClientSecret):
 		clientSecretPath = defaultClientSecret
+	case fileExists(legacyClientSecret):
+		clientSecretPath = legacyClientSecret
 	}
 
 	return AppPaths{
 		ConfigDir:        configDir,
 		ConfigFile:       configPath,
 		LegacyConfigFile: legacyConfigPath,
-		OAuthClientFile:  firstExistingPath(localOAuthClient, defaultOAuthClient),
+		OAuthClientFile:  firstExistingPath(localOAuthClient, defaultOAuthClient, legacyOAuthClient),
 		ClientSecretFile: clientSecretPath,
-		TokenFile:        filepath.Join(configDir, "token.json"),
+		TokenFile:        firstExistingPath(defaultToken, legacyToken),
 	}
 }
 
 func defaultConfigDir(fallback string) string {
 	baseDir, err := os.UserConfigDir()
 	if err != nil || baseDir == "" {
-		return filepath.Join(fallback, ".calblink")
+		return defaultLegacyConfigDir(fallback)
 	}
 	return filepath.Join(baseDir, "calblink")
+}
+
+func defaultLegacyConfigDir(fallback string) string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		return filepath.Join(fallback, ".calblink")
+	}
+	return filepath.Join(homeDir, ".calblink")
 }
 
 func cleanPath(path string) string {
